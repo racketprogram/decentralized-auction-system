@@ -1,0 +1,18 @@
+{
+    "name": "p2p-auction",
+    "version": "1.0.0",
+    "description": "P2P Auction System using Hyperswarm RPC and Hypercores",
+    "main": "src/index.js",
+    "scripts": {
+        "start": "node src/index.js"
+    },
+    "dependencies": {
+        "@hyperswarm/rpc": "^3.3.2",
+        "codecs": "^3.1.0",
+        "hyperbee": "^2.15.0",
+        "hypercore": "^10.37.9",
+        "hypercore-crypto": "^3.4.2",
+        "hyperswarm": "^4.8.0",
+        "random-access-memory": "^6.2.1"
+    }
+}

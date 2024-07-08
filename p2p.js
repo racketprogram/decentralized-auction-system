@@ -21,11 +21,11 @@ class AuctionNode {
     this.bids = new Hypercore(`./data/bids-${nodeId}`, {
       valueEncoding: 'json'
     })
-    
+
     this.swarm = new Hyperswarm()
     this.peers = new Map()
     this.processedMessages = new Set()
-    
+
     this.setupRPC()
   }
 
@@ -42,17 +42,17 @@ class AuctionNode {
     await this.server.listen()
     const publicKey = this.server.publicKey.toString('hex')
     log(`Node ${this.nodeId} started with public key: ${publicKey}`)
-    
+
     const topic = crypto.createHash('sha256')
       .update('auction-app-topic')
       .digest()
-    
+
     log(`Joining swarm with topic: ${topic.toString('hex')}`)
     this.swarm.join(topic, { lookup: true, announce: true })
-    
+
     this.swarm.on('connection', this.handleConnection.bind(this))
 
-    return publicKey
+    return this.rpc.connect(this.server.publicKey)
   }
 
   async handleConnection(socket, info) {
@@ -96,78 +96,71 @@ class AuctionNode {
 
   async handleOpenAuction(reqData) {
     log(`Node ${this.nodeId} received openAuction request`)
-    const { messageId, item, startingPrice } = JSON.parse(reqData.toString())
-    
+    const { messageId, auctionId, item, startingPrice, createdBy } = JSON.parse(reqData.toString())
+
     if (this.processedMessages.has(messageId)) {
       log(`Ignoring already processed message: ${messageId}`)
       return Buffer.from(JSON.stringify({ status: 'ignored' }))
     }
-    
+
     this.processedMessages.add(messageId)
-    
-    const result = await this.openAuction(item, startingPrice)
-    
-    const fullAuctionInfo = {
-      messageId,
-      auctionId: result.auctionId,
-      item,
-      startingPrice,
-      createdBy: this.nodeId,
-      status: 'open'
+
+    if (createdBy === this.nodeId) {
+      // 本地操作
+      const result = await this.localOpenAuction(item, startingPrice)
+      await this.broadcastToAllNodes('openAuction', { messageId, ...result, createdBy: this.nodeId })
+      return Buffer.from(JSON.stringify(result))
+    } else {
+      // 同步操作
+      await this.syncOpenAuction(auctionId, item, startingPrice, createdBy)
+      return Buffer.from(JSON.stringify({ status: 'synced' }))
     }
-    
-    await this.broadcastToAllNodes('openAuction', fullAuctionInfo)
-    return Buffer.from(JSON.stringify(result))
   }
 
   async handlePlaceBid(reqData) {
     log(`Node ${this.nodeId} received placeBid request`)
     const { messageId, auctionId, bidAmount, bidder } = JSON.parse(reqData.toString())
-    
+
     if (this.processedMessages.has(messageId)) {
       log(`Ignoring already processed message: ${messageId}`)
       return Buffer.from(JSON.stringify({ status: 'ignored' }))
     }
-    
+
     this.processedMessages.add(messageId)
-    
-    const result = await this.placeBid(auctionId, bidAmount, bidder)
-    
-    const fullBidInfo = {
-      messageId,
-      auctionId,
-      bidAmount,
-      bidder,
-      timestamp: Date.now()
+
+    if (bidder === this.nodeId) {
+      // 本地操作
+      const result = await this.localPlaceBid(auctionId, bidAmount, bidder)
+      await this.broadcastToAllNodes('placeBid', { messageId, auctionId, bidAmount, bidder })
+      return Buffer.from(JSON.stringify(result))
+    } else {
+      // 同步操作
+      await this.syncPlaceBid(auctionId, bidAmount, bidder)
+      return Buffer.from(JSON.stringify({ status: 'synced' }))
     }
-    
-    await this.broadcastToAllNodes('placeBid', fullBidInfo)
-    return Buffer.from(JSON.stringify(result))
   }
 
   async handleCloseAuction(reqData) {
     log(`Node ${this.nodeId} received closeAuction request`)
-    const { messageId, auctionId } = JSON.parse(reqData.toString())
-    
+    const { messageId, auctionId, closedBy } = JSON.parse(reqData.toString())
+
     if (this.processedMessages.has(messageId)) {
       log(`Ignoring already processed message: ${messageId}`)
       return Buffer.from(JSON.stringify({ status: 'ignored' }))
     }
-    
+
     this.processedMessages.add(messageId)
-    
-    const result = await this.closeAuction(auctionId)
-    
-    const fullCloseInfo = {
-      messageId,
-      auctionId,
-      closedBy: this.nodeId,
-      winningBid: result.winningBid,
-      status: 'closed'
+
+    if (closedBy === this.nodeId) {
+      // 本地操作
+      const result = await this.localCloseAuction(auctionId)
+      await this.broadcastToAllNodes('closeAuction', { messageId, auctionId, closedBy: this.nodeId, ...result })
+      return Buffer.from(JSON.stringify(result))
+    } else {
+      // 同步操作
+      await this.syncCloseAuction(auctionId, closedBy)
+      return Buffer.from(JSON.stringify({ status: 'synced' }))
     }
-    
-    await this.broadcastToAllNodes('closeAuction', fullCloseInfo)
-    return Buffer.from(JSON.stringify(result))
   }
 
   async handleGetAuctionStatus(reqData) {
@@ -177,16 +170,23 @@ class AuctionNode {
     return Buffer.from(JSON.stringify(result))
   }
 
-  async openAuction(item, startingPrice) {
+  async localOpenAuction(item, startingPrice) {
     const auctionId = crypto.randomBytes(32).toString('hex')
     log(`Node ${this.nodeId} opening new auction: ${auctionId} for item: ${item} with starting price: ${startingPrice}`)
     const auction = { id: auctionId, item, startingPrice, status: 'open', createdBy: this.nodeId }
     await this.auctions.append(auction)
     log(`Auction ${auctionId} opened successfully`)
-    return { auctionId }
+    return { auctionId, item, startingPrice }
   }
 
-  async placeBid(auctionId, bidAmount, bidder) {
+  async syncOpenAuction(auctionId, item, startingPrice, createdBy) {
+    log(`Node ${this.nodeId} syncing new auction: ${auctionId} for item: ${item}`)
+    const auction = { id: auctionId, item, startingPrice, status: 'open', createdBy }
+    await this.auctions.append(auction)
+    log(`Auction ${auctionId} synced successfully`)
+  }
+
+  async localPlaceBid(auctionId, bidAmount, bidder) {
     log(`Node ${this.nodeId} placing bid of ${bidAmount} for auction: ${auctionId} by bidder: ${bidder}`)
     const auctionStatus = await this.getAuctionStatus(auctionId)
     if (!auctionStatus || auctionStatus.status !== 'open') {
@@ -197,14 +197,21 @@ class AuctionNode {
       log(`Bid failed: Bid amount ${bidAmount} is not higher than current highest bid ${auctionStatus.highestBid}`)
       throw new Error('Bid amount must be higher than current highest bid')
     }
-    
+
     const bid = { auctionId, bidder, amount: bidAmount, timestamp: Date.now() }
     await this.bids.append(bid)
     log(`Bid placed successfully for auction ${auctionId}`)
     return { success: true }
   }
 
-  async closeAuction(auctionId) {
+  async syncPlaceBid(auctionId, bidAmount, bidder) {
+    log(`Node ${this.nodeId} syncing bid of ${bidAmount} for auction: ${auctionId} by bidder: ${bidder}`)
+    const bid = { auctionId, bidder, amount: bidAmount, timestamp: Date.now() }
+    await this.bids.append(bid)
+    log(`Bid synced successfully for auction ${auctionId}`)
+  }
+
+  async localCloseAuction(auctionId) {
     log(`Node ${this.nodeId} attempting to close auction: ${auctionId}`)
     const auctionStatus = await this.getAuctionStatus(auctionId)
     if (!auctionStatus || auctionStatus.status !== 'open') {
@@ -215,12 +222,25 @@ class AuctionNode {
       log(`Close auction failed: Node ${this.nodeId} is not the creator of auction ${auctionId}`)
       throw new Error('Only the creator can close the auction')
     }
-    
+
     const winningBid = await this.getHighestBid(auctionId)
     const closedAuction = { ...auctionStatus, status: 'closed', winner: winningBid }
     await this.auctions.append(closedAuction)
     log(`Auction ${auctionId} closed successfully`)
     return { success: true, winningBid }
+  }
+
+  async syncCloseAuction(auctionId, closedBy) {
+    log(`Node ${this.nodeId} syncing close auction: ${auctionId} closed by: ${closedBy}`)
+    const auctionStatus = await this.getAuctionStatus(auctionId)
+    if (!auctionStatus) {
+      log(`Sync close auction failed: Auction ${auctionId} not found`)
+      throw new Error('Auction not found')
+    }
+    const winningBid = await this.getHighestBid(auctionId)
+    const closedAuction = { ...auctionStatus, status: 'closed', winner: winningBid }
+    await this.auctions.append(closedAuction)
+    log(`Auction ${auctionId} sync closed successfully`)
   }
 
   async getAuctionStatus(auctionId) {
@@ -254,6 +274,7 @@ class AuctionNode {
   async broadcastToAllNodes(method, data) {
     log(`Broadcasting ${method} to all nodes`)
     const serializedData = Buffer.from(JSON.stringify(data))
+
     log(`broadcastToAllNodes this.peers length ${this.peers.size}`)
     for (const [peerKey, client] of this.peers) {
       if (peerKey === this.server.publicKey.toString('hex')) {
@@ -291,61 +312,87 @@ async function main() {
   const secureMode = true // 設置為 false 以使用開放模式
 
   const node1 = new AuctionNode('node1', sharedSecret, secureMode)
-  const node1PublicKey = await node1.start()
+  const clientToNode1 = await node1.start()
 
   const node2 = new AuctionNode('node2', sharedSecret, secureMode)
-  const node2PublicKey = await node2.start()
+  const clientToNode2 = await node2.start()
 
   log('Waiting for nodes to discover each other')
-  const node2DiscoveredNode1 = await waitForPeerDiscovery(node2, node1PublicKey)
-  const node1DiscoveredNode2 = await waitForPeerDiscovery(node1, node2PublicKey)
+  const node2DiscoveredNode1 = await waitForPeerDiscovery(node2, node1.server.publicKey.toString('hex'))
+  const node1DiscoveredNode2 = await waitForPeerDiscovery(node1, node2.server.publicKey.toString('hex'))
 
   if (node2DiscoveredNode1 && node1DiscoveredNode2) {
     log('Both nodes have discovered each other')
-    const clientToNode1 = node2.peers.get(node1PublicKey)
 
-    if (clientToNode1) {
-      try {
-        log('Opening auction from node2 to node1')
-        const messageId = crypto.randomBytes(32).toString('hex')
-        const openAuctionResponse = await clientToNode1.request('openAuction', Buffer.from(JSON.stringify({ 
-          messageId,
-          item: 'Pic#1', 
-          startingPrice: 75 
-        })))
-        const { auctionId } = JSON.parse(openAuctionResponse.toString())
-        log(`Auction opened: ${auctionId}`)
+    // 給節點一些時間來發現彼此並同步數據
+    await new Promise(resolve => setTimeout(resolve, 5000))
 
-        log('Getting auction status')
-        const statusResponse = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
-        log(`Auction status: ${statusResponse.toString()}`)
+    try {
+      log('Opening auction by node1')
+      const messageId = crypto.randomBytes(32).toString('hex')
+      const openAuctionResponse = await clientToNode1.request('openAuction', Buffer.from(JSON.stringify({
+        messageId,
+        item: 'Pic#1',
+        startingPrice: 75,
+        createdBy: 'node1'  // 添加 createdBy 參數
+      })))
+      const { auctionId } = JSON.parse(openAuctionResponse.toString())
+      log(`Auction opened: ${auctionId}`)
 
-        log('Placing bid')
-        const bidMessageId = crypto.randomBytes(32).toString('hex')
-        await clientToNode1.request('placeBid', Buffer.from(JSON.stringify({ 
-          messageId: bidMessageId,
-          auctionId, 
-          bidAmount: 80,
-          bidder: 'node2'
-        })))
-        log('Bid placed')
+      // 等待一段時間，確保數據同步
+      await new Promise(resolve => setTimeout(resolve, 5000))
 
-        log('Getting updated auction status')
-        const newStatusResponse = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
-        log(`New auction status: ${newStatusResponse.toString()}`)
+      log('Getting auction status by node1')
+      let statusResponse = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
+      log(`Auction status from node1: ${statusResponse.toString()}`)
 
-        log('Closing auction')
-        const closeMessageId = crypto.randomBytes(32).toString('hex')
-        const closeAuctionResponse = await clientToNode1.request('closeAuction', Buffer.from(JSON.stringify({ 
-          messageId: closeMessageId,
-          auctionId 
-        })))
-        log(`Auction closed: ${closeAuctionResponse.toString()}`)
-      } catch (error) {
-        console.error('Error during auction process:', error.message)
-      }
-    } else {
-      console.error('Failed to get client connection to node1')
+      log('Getting auction status by node2')
+      statusResponse = await clientToNode2.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
+      log(`Auction status from node2: ${statusResponse.toString()}`)
+
+      log('Placing bid by node2')
+      const bidMessageId = crypto.randomBytes(32).toString('hex')
+      await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
+        messageId: bidMessageId,
+        auctionId,
+        bidAmount: 80,
+        bidder: 'node2'
+      })))
+      log('Bid placed')
+
+      // 等待一段時間，確保數據同步
+      await new Promise(resolve => setTimeout(resolve, 5000))
+
+      log('Getting updated auction status from node1')
+      const newStatusResponse1 = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
+      log(`New auction status from node1: ${newStatusResponse1.toString()}`)
+
+      log('Getting updated auction status from node2')
+      const newStatusResponse2 = await clientToNode2.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
+      log(`New auction status from node2: ${newStatusResponse2.toString()}`)
+
+      log('Closing auction')
+      const closeMessageId = crypto.randomBytes(32).toString('hex')
+      const closeAuctionResponse = await clientToNode1.request('closeAuction', Buffer.from(JSON.stringify({
+        messageId: closeMessageId,
+        auctionId,
+        closedBy: 'node1'  // 添加 closedBy 參數
+      })))
+      log(`Auction closed: ${closeAuctionResponse.toString()}`)
+
+      // 等待一段時間，確保數據同步
+      await new Promise(resolve => setTimeout(resolve, 5000))
+
+      log('Getting final auction status from node1')
+      const finalStatusResponse1 = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
+      log(`Final auction status from node1: ${finalStatusResponse1.toString()}`)
+
+      log('Getting final auction status from node2')
+      const finalStatusResponse2 = await clientToNode2.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
+      log(`Final auction status from node2: ${finalStatusResponse2.toString()}`)
+
+    } catch (error) {
+      console.error('Error during auction process:', error.message)
     }
   } else {
     console.error('Nodes failed to discover each other')

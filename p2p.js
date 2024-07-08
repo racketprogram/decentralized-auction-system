@@ -106,12 +106,10 @@ class AuctionNode {
     this.processedMessages.add(messageId)
 
     if (createdBy === this.nodeId) {
-      // 本地操作
       const result = await this.localOpenAuction(item, startingPrice)
       await this.broadcastToAllNodes('openAuction', { messageId, ...result, createdBy: this.nodeId })
       return Buffer.from(JSON.stringify(result))
     } else {
-      // 同步操作
       await this.syncOpenAuction(auctionId, item, startingPrice, createdBy)
       return Buffer.from(JSON.stringify({ status: 'synced' }))
     }
@@ -129,12 +127,10 @@ class AuctionNode {
     this.processedMessages.add(messageId)
 
     if (bidder === this.nodeId) {
-      // 本地操作
       const result = await this.localPlaceBid(auctionId, bidAmount, bidder)
       await this.broadcastToAllNodes('placeBid', { messageId, auctionId, bidAmount, bidder })
       return Buffer.from(JSON.stringify(result))
     } else {
-      // 同步操作
       await this.syncPlaceBid(auctionId, bidAmount, bidder)
       return Buffer.from(JSON.stringify({ status: 'synced' }))
     }
@@ -152,12 +148,10 @@ class AuctionNode {
     this.processedMessages.add(messageId)
 
     if (closedBy === this.nodeId) {
-      // 本地操作
       const result = await this.localCloseAuction(auctionId)
       await this.broadcastToAllNodes('closeAuction', { messageId, auctionId, closedBy: this.nodeId, ...result })
       return Buffer.from(JSON.stringify(result))
     } else {
-      // 同步操作
       await this.syncCloseAuction(auctionId, closedBy)
       return Buffer.from(JSON.stringify({ status: 'synced' }))
     }
@@ -313,7 +307,7 @@ function messageId() {
 async function main() {
   log('Starting main function')
   const sharedSecret = 'your-secure-shared-secret'
-  const secureMode = true // 設置為 false 以使用開放模式
+  const secureMode = true // Set to false to use open mode
 
   const node1 = new AuctionNode('node1', sharedSecret, secureMode)
   const clientToNode1 = await node1.start()
@@ -406,7 +400,7 @@ async function main() {
     })))
     log(`Auction closed: ${closeAuctionResponse.toString()}`)
 
-    // 獲取最終拍賣狀態
+    // Get the final auction status
     log('Getting final auction status from all nodes')
     const finalStatusResponse1 = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
     log(`Final auction status from node1: ${finalStatusResponse1.toString()}`)
@@ -422,11 +416,11 @@ async function main() {
 
   log('All tests success')
 
-  // 關閉節點
+  // close nodes
   await node1.swarm.destroy()
   await node2.swarm.destroy()
   await node3.swarm.destroy()
   log('Nodes closed')
 }
 
-main().then(()=>process.exit(0)).catch(console.error)
+main().then(() => process.exit(0)).catch(console.error)

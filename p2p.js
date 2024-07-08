@@ -8,18 +8,22 @@ function log(message) {
 }
 
 class AuctionNode {
-  constructor(nodeId, sharedSecret, secureMode = false) {
+  constructor(nodeId, sharedSecret, sharedAuctionKey, sharedBidKey, secureMode = false) {
     this.nodeId = nodeId
     this.sharedSecret = sharedSecret
     this.secureMode = secureMode
     log(`Initializing AuctionNode with ID: ${nodeId}, Secure Mode: ${secureMode}`)
     this.rpc = new RPC()
     this.server = this.rpc.createServer()
-    this.auctions = new Hypercore(`./data/auctions-${nodeId}`, {
-      valueEncoding: 'json'
+    this.auctionFeed = new Hypercore(`./data/auctions-${nodeId}`, {
+      valueEncoding: 'json',
+      key: sharedAuctionKey,
+      writable: true,
     })
-    this.bids = new Hypercore(`./data/bids-${nodeId}`, {
-      valueEncoding: 'json'
+    this.bidFeed = new Hypercore(`./data/bids-${nodeId}`, {
+      valueEncoding: 'json',
+      key: sharedBidKey,
+      writable: true,
     })
 
     this.swarm = new Hyperswarm()
@@ -40,15 +44,16 @@ class AuctionNode {
 
   async start() {
     await this.server.listen()
+    await this.auctionFeed.ready()
+    await this.bidFeed.ready()
     const publicKey = this.server.publicKey.toString('hex')
     log(`Node ${this.nodeId} started with public key: ${publicKey}`)
 
-    const topic = crypto.createHash('sha256')
-      .update('auction-app-topic')
-      .digest()
+    const auctionTopic = crypto.createHash('sha256').update(this.auctionFeed.key).digest()
+    const bidTopic = crypto.createHash('sha256').update(this.bidFeed.key).digest()
 
-    log(`Joining swarm with topic: ${topic.toString('hex')}`)
-    this.swarm.join(topic, { lookup: true, announce: true })
+    this.swarm.join(auctionTopic, { lookup: true, announce: true })
+    this.swarm.join(bidTopic, { lookup: true, announce: true })
 
     this.swarm.on('connection', this.handleConnection.bind(this))
 
@@ -64,6 +69,8 @@ class AuctionNode {
         log(`New peer connected to node ${this.nodeId} in open mode: ${remotePublicKey}`)
         this.peers.set(remotePublicKey, this.rpc.connect(info.publicKey))
       }
+      this.auctionFeed.replicate(socket)
+      this.bidFeed.replicate(socket)
     } else {
       log(`Ignoring self-connection for node ${this.nodeId}`)
     }
@@ -96,7 +103,7 @@ class AuctionNode {
 
   async handleOpenAuction(reqData) {
     log(`Node ${this.nodeId} received openAuction request`)
-    const { messageId, auctionId, item, startingPrice, createdBy } = JSON.parse(reqData.toString())
+    const { messageId, item, startingPrice, createdBy } = JSON.parse(reqData.toString())
 
     if (this.processedMessages.has(messageId)) {
       log(`Ignoring already processed message: ${messageId}`)
@@ -107,10 +114,8 @@ class AuctionNode {
 
     if (createdBy === this.nodeId) {
       const result = await this.localOpenAuction(item, startingPrice)
-      await this.broadcastToAllNodes('openAuction', { messageId, ...result, createdBy: this.nodeId })
       return Buffer.from(JSON.stringify(result))
     } else {
-      await this.syncOpenAuction(auctionId, item, startingPrice, createdBy)
       return Buffer.from(JSON.stringify({ status: 'synced' }))
     }
   }
@@ -128,10 +133,8 @@ class AuctionNode {
 
     if (bidder === this.nodeId) {
       const result = await this.localPlaceBid(auctionId, bidAmount, bidder)
-      await this.broadcastToAllNodes('placeBid', { messageId, auctionId, bidAmount, bidder })
       return Buffer.from(JSON.stringify(result))
     } else {
-      await this.syncPlaceBid(auctionId, bidAmount, bidder)
       return Buffer.from(JSON.stringify({ status: 'synced' }))
     }
   }
@@ -149,10 +152,8 @@ class AuctionNode {
 
     if (closedBy === this.nodeId) {
       const result = await this.localCloseAuction(auctionId)
-      await this.broadcastToAllNodes('closeAuction', { messageId, auctionId, closedBy: this.nodeId, ...result })
       return Buffer.from(JSON.stringify(result))
     } else {
-      await this.syncCloseAuction(auctionId, closedBy)
       return Buffer.from(JSON.stringify({ status: 'synced' }))
     }
   }
@@ -165,22 +166,17 @@ class AuctionNode {
   }
 
   async localOpenAuction(item, startingPrice) {
+    await this.auctionFeed.ready()
     const auctionId = crypto.randomBytes(32).toString('hex')
     log(`Node ${this.nodeId} opening new auction: ${auctionId} for item: ${item} with starting price: ${startingPrice}`)
     const auction = { id: auctionId, item, startingPrice, status: 'open', createdBy: this.nodeId }
-    await this.auctions.append(auction)
+    await this.auctionFeed.append(auction)
     log(`Auction ${auctionId} opened successfully`)
     return { auctionId, item, startingPrice }
   }
 
-  async syncOpenAuction(auctionId, item, startingPrice, createdBy) {
-    log(`Node ${this.nodeId} syncing new auction: ${auctionId} for item: ${item}`)
-    const auction = { id: auctionId, item, startingPrice, status: 'open', createdBy }
-    await this.auctions.append(auction)
-    log(`Auction ${auctionId} synced successfully`)
-  }
-
   async localPlaceBid(auctionId, bidAmount, bidder) {
+    await this.bidFeed.ready()
     log(`Node ${this.nodeId} placing bid of ${bidAmount} for auction: ${auctionId} by bidder: ${bidder}`)
     const auctionStatus = await this.getAuctionStatus(auctionId)
     if (!auctionStatus || auctionStatus.status !== 'open') {
@@ -193,19 +189,13 @@ class AuctionNode {
     }
 
     const bid = { auctionId, bidder, amount: bidAmount, timestamp: Date.now() }
-    await this.bids.append(bid)
+    await this.bidFeed.append(bid)
     log(`Bid placed successfully for auction ${auctionId}`)
     return { success: true }
   }
 
-  async syncPlaceBid(auctionId, bidAmount, bidder) {
-    log(`Node ${this.nodeId} syncing bid of ${bidAmount} for auction: ${auctionId} by bidder: ${bidder}`)
-    const bid = { auctionId, bidder, amount: bidAmount, timestamp: Date.now() }
-    await this.bids.append(bid)
-    log(`Bid synced successfully for auction ${auctionId}`)
-  }
-
   async localCloseAuction(auctionId) {
+    await this.auctionFeed.ready()
     log(`Node ${this.nodeId} attempting to close auction: ${auctionId}`)
     const auctionStatus = await this.getAuctionStatus(auctionId)
     if (!auctionStatus || auctionStatus.status !== 'open') {
@@ -219,28 +209,15 @@ class AuctionNode {
 
     const winningBid = await this.getHighestBid(auctionId)
     const closedAuction = { ...auctionStatus, status: 'closed', winner: winningBid }
-    await this.auctions.append(closedAuction)
+    await this.auctionFeed.append(closedAuction)
     log(`Auction ${auctionId} closed successfully`)
     return { success: true, winningBid }
   }
 
-  async syncCloseAuction(auctionId, closedBy) {
-    log(`Node ${this.nodeId} syncing close auction: ${auctionId} closed by: ${closedBy}`)
-    const auctionStatus = await this.getAuctionStatus(auctionId)
-    if (!auctionStatus) {
-      log(`Sync close auction failed: Auction ${auctionId} not found`)
-      throw new Error('Auction not found')
-    }
-    const winningBid = await this.getHighestBid(auctionId)
-    const closedAuction = { ...auctionStatus, status: 'closed', winner: winningBid }
-    await this.auctions.append(closedAuction)
-    log(`Auction ${auctionId} sync closed successfully`)
-  }
-
   async getAuctionStatus(auctionId) {
     log(`Getting status for auction: ${auctionId}`)
-    for (let i = this.auctions.length - 1; i >= 0; i--) {
-      const auction = await this.auctions.get(i)
+    for (let i = this.auctionFeed.length - 1; i >= 0; i--) {
+      const auction = await this.auctionFeed.get(i)
       if (auction.id === auctionId) {
         const highestBid = await this.getHighestBid(auctionId)
         const status = { ...auction, highestBid: highestBid ? highestBid.amount : auction.startingPrice, noAnyBid: !highestBid }
@@ -255,34 +232,14 @@ class AuctionNode {
   async getHighestBid(auctionId) {
     log(`Getting highest bid for auction: ${auctionId}`)
     let highestBid = null
-    for (let i = 0; i < this.bids.length; i++) {
-      const bid = await this.bids.get(i)
+    for (let i = 0; i < this.bidFeed.length; i++) {
+      const bid = await this.bidFeed.get(i)
       if (bid.auctionId === auctionId && (!highestBid || bid.amount > highestBid.amount)) {
         highestBid = bid
       }
     }
     log(`Highest bid for auction ${auctionId}: ${JSON.stringify(highestBid)}`)
     return highestBid
-  }
-
-  async broadcastToAllNodes(method, data) {
-    log(`Broadcasting ${method} to all nodes`)
-    const serializedData = Buffer.from(JSON.stringify(data))
-
-    log(`broadcastToAllNodes this.peers length ${this.peers.size}`)
-    for (const [peerKey, client] of this.peers) {
-      if (peerKey === this.server.publicKey.toString('hex')) {
-        log(`Skipping self-broadcast for node ${this.nodeId}`)
-        continue;
-      }
-      try {
-        log(`Sending ${method} to peer: ${peerKey}`)
-        await client.request(method, serializedData)
-        log(`Successfully sent ${method} to peer: ${peerKey}`)
-      } catch (err) {
-        console.error(`Failed to broadcast ${method} to peer ${peerKey}:`, err.message)
-      }
-    }
   }
 }
 
@@ -309,13 +266,16 @@ async function main() {
   const sharedSecret = 'your-secure-shared-secret'
   const secureMode = true // Set to false to use open mode
 
-  const node1 = new AuctionNode('node1', sharedSecret, secureMode)
+  const sharedAuctionKey = crypto.randomBytes(32)
+  const sharedBidKey = crypto.randomBytes(32)
+
+  const node1 = new AuctionNode('node1', sharedSecret, sharedAuctionKey, sharedBidKey, secureMode)
   const clientToNode1 = await node1.start()
 
-  const node2 = new AuctionNode('node2', sharedSecret, secureMode)
+  const node2 = new AuctionNode('node2', sharedSecret, sharedAuctionKey, sharedBidKey, secureMode)
   const clientToNode2 = await node2.start()
 
-  const node3 = new AuctionNode('node3', sharedSecret, secureMode)
+  const node3 = new AuctionNode('node3', sharedSecret, sharedAuctionKey, sharedBidKey, secureMode)
   const clientToNode3 = await node3.start()
 
   log('Waiting for nodes to discover each other')
@@ -381,15 +341,7 @@ async function main() {
       bidAmount: 80,
       bidder: 'node2'
     })))
-    log('Second bid placed by Client2 for Pic#1')
-
-    // await clientToNode3.request('placeBid', Buffer.from(JSON.stringify({
-    //   messageId: messageId(),
-    //   auctionId: auctionId1,
-    //   bidAmount: 123,
-    //   bidder: 'node3'
-    // })))
-    // log('Second bid placed by Client#3 for Pic#1')
+    log('Second bid placed by Client#2 for Pic#1')
 
     // Client#1 closes auction
     log('Client#1 closing auction for Pic#1')
@@ -414,9 +366,9 @@ async function main() {
     log('Nodes failed to discover each other')
   }
 
-  log('All tests success')
+  log('All tests completed')
 
-  // close nodes
+  // Close nodes
   await node1.swarm.destroy()
   await node2.swarm.destroy()
   await node3.swarm.destroy()

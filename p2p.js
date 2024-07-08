@@ -63,39 +63,46 @@ class AuctionNode {
   async handleConnection(socket, info) {
     const remotePublicKey = info.publicKey.toString('hex')
     if (remotePublicKey !== this.server.publicKey.toString('hex')) {
-      if (this.secureMode) {
-        await this.authenticatePeer(socket, info)
-      } else {
-        log(`New peer connected to node ${this.nodeId} in open mode: ${remotePublicKey}`)
-        this.peers.set(remotePublicKey, this.rpc.connect(info.publicKey))
+      try {
+        const authenticated = await this.authenticatePeer(socket, info)
+        if (authenticated) {
+          this.auctionFeed.replicate(socket)
+          this.bidFeed.replicate(socket)
+          log(`Peer ${remotePublicKey} successfully joined the application`)
+        } else {
+          log(`Peer ${remotePublicKey} failed to authenticate, closing connection`)
+        }
+      } catch (err) {
+        log(`Connection failed for peer: ${remotePublicKey}. Error: ${err.message}`)
       }
-      this.auctionFeed.replicate(socket)
-      this.bidFeed.replicate(socket)
     } else {
       log(`Ignoring self-connection for node ${this.nodeId}`)
     }
   }
-
+  
   async authenticatePeer(socket, info) {
-    const remotePublicKey = info.publicKey.toString('hex')
-    try {
-      const tempClient = this.rpc.connect(info.publicKey)
-      const challenge = crypto.randomBytes(32).toString('hex')
-      const response = await tempClient.request('authenticate', Buffer.from(challenge))
-      const expectedResponse = crypto.createHash('sha256').update(challenge + this.sharedSecret).digest('hex')
-      if (response.toString() === expectedResponse) {
-        log(`Authenticated new peer connected to node ${this.nodeId}: ${remotePublicKey}`)
-        this.peers.set(remotePublicKey, tempClient)
-      } else {
-        log(`Authentication failed for peer: ${remotePublicKey}`)
-        socket.destroy()
-      }
-    } catch (err) {
-      log(`Authentication failed for peer: ${remotePublicKey}. Error: ${err.message}`)
-      socket.destroy()
+  const remotePublicKey = info.publicKey.toString('hex')
+  try {
+    const rpcClient = await this.rpc.connect(info.publicKey)
+    const challenge = crypto.randomBytes(32).toString('hex')
+    const response = await rpcClient.request('authenticate', Buffer.from(challenge))
+    const expectedResponse = crypto.createHash('sha256').update(challenge + this.sharedSecret).digest('hex')
+    
+    if (response.toString() === expectedResponse) {
+      log(`Authenticated new peer connected to node ${this.nodeId}: ${remotePublicKey}`)
+      // 不再保存 RPC 客戶端
+      rpcClient.destroy() // 認證完成後關閉 RPC 連接
+      return true
+    } else {
+      log(`Authentication failed for peer: ${remotePublicKey}. Invalid response.`)
+      return false
     }
+  } catch (err) {
+    log(`Authentication failed for peer: ${remotePublicKey}. Error: ${err.message}`)
+    return false
   }
-
+}
+  
   async handleAuthenticate(challenge) {
     const response = crypto.createHash('sha256').update(challenge + this.sharedSecret).digest('hex')
     return Buffer.from(response)
@@ -243,43 +250,41 @@ class AuctionNode {
   }
 }
 
-async function waitForPeerDiscovery(node, targetPublicKey, maxWaitTime = 120000) {
+async function waitForPeerDiscovery(node, targetPublicKey, maxWaitTime = 360000) {
   const startTime = Date.now()
   while (Date.now() - startTime < maxWaitTime) {
     log(`Node ${node.nodeId} looking for peer ${targetPublicKey}`)
-    if (node.peers.has(targetPublicKey)) {
-      log(`Node ${node.nodeId} found peer ${targetPublicKey}`)
-      return true
+    if (node.swarm.connections.has(targetPublicKey)) {
+      // Check if both Hypercores are writable
+      const auctionFeedWritable = node.auctionFeed.writable
+      const bidFeedWritable = node.bidFeed.writable
+      if (auctionFeedWritable && bidFeedWritable) {
+        log(`Node ${node.nodeId} found peer ${targetPublicKey} with writable Hypercores`)
+        return true
+      }
     }
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    await new Promise(resolve => setTimeout(resolve, 3000))
   }
-  log(`Node ${node.nodeId} failed to discover peer ${targetPublicKey} within ${maxWaitTime}ms`)
+  log(`Node ${node.nodeId} failed to discover peer ${targetPublicKey} with writable Hypercores within ${maxWaitTime}ms`)
   return false
-}
-
-function messageId() {
-  return crypto.randomBytes(32).toString('hex')
 }
 
 async function main() {
   log('Starting main function')
-  const sharedSecret = 'your-secure-shared-secret'
+  const sharedSecret = 'your-secure-shared-secret-p2p2p2p2p2p2p2p2p'
   const secureMode = true // Set to false to use open mode
-
-  const sharedAuctionKey = crypto.randomBytes(32)
-  const sharedBidKey = crypto.randomBytes(32)
-
+  
+  const sharedAuctionKey = Buffer.from('0123656789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', 'hex')
+  const sharedBidKey = Buffer.from('fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210', 'hex')
+  
   const node1 = new AuctionNode('node1', sharedSecret, sharedAuctionKey, sharedBidKey, secureMode)
-  const clientToNode1 = await node1.start()
-
   const node2 = new AuctionNode('node2', sharedSecret, sharedAuctionKey, sharedBidKey, secureMode)
-  const clientToNode2 = await node2.start()
-
   const node3 = new AuctionNode('node3', sharedSecret, sharedAuctionKey, sharedBidKey, secureMode)
-  const clientToNode3 = await node3.start()
+
+  await Promise.all([node1.start(), node2.start(), node3.start()])
 
   log('Waiting for nodes to discover each other')
-  const allNodesDiscovered = await Promise.all([
+  await Promise.all([
     waitForPeerDiscovery(node1, node2.server.publicKey.toString('hex')),
     waitForPeerDiscovery(node1, node3.server.publicKey.toString('hex')),
     waitForPeerDiscovery(node2, node1.server.publicKey.toString('hex')),
@@ -288,91 +293,75 @@ async function main() {
     waitForPeerDiscovery(node3, node2.server.publicKey.toString('hex'))
   ])
 
-  if (allNodesDiscovered.every(discovered => discovered)) {
-    log('All nodes have discovered each other')
+  log('All nodes have discovered each other')
 
-    // Client#1 opens auction: sell Pic#1 for 75 USDt
-    log('Client#1 opening auction for Pic#1')
-    const openAuctionResponse1 = await clientToNode1.request('openAuction', Buffer.from(JSON.stringify({
-      messageId: messageId(),
-      item: 'Pic#1',
-      startingPrice: 75,
-      createdBy: 'node1'
-    })))
-    const { auctionId: auctionId1 } = JSON.parse(openAuctionResponse1.toString())
-    log(`Auction opened for Pic#1: ${auctionId1}`)
+  // Wait for connections to be fully established
+  await new Promise(resolve => setTimeout(resolve, 5000))
 
-    // Client#2 opens auction: sell Pic#2 for 60 USDt
-    log('Client#2 opening auction for Pic#2')
-    const openAuctionResponse2 = await clientToNode2.request('openAuction', Buffer.from(JSON.stringify({
-      messageId: messageId(),
-      item: 'Pic#2',
-      startingPrice: 60,
-      createdBy: 'node2'
-    })))
-    const { auctionId: auctionId2 } = JSON.parse(openAuctionResponse2.toString())
-    log(`Auction opened for Pic#2: ${auctionId2}`)
+  // Client#1 opens auction: sell Pic#1 for 75 USDt
+  log('Client#1 opening auction for Pic#1')
+  const openAuctionResponse1 = await node1.localOpenAuction('Pic#1', 75)
+  const auctionId1 = openAuctionResponse1.auctionId
+  log(`Auction opened for Pic#1: ${auctionId1}`)
 
-    // Client#2 makes bid for Client#1->Pic#1 with 75 USDt
-    log('Client#2 placing bid for Pic#1')
-    await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
-      messageId: messageId(),
-      auctionId: auctionId1,
-      bidAmount: 75,
-      bidder: 'node2'
-    })))
-    log('Bid placed by Client#2 for Pic#1')
+  // Client#2 opens auction: sell Pic#2 for 60 USDt
+  log('Client#2 opening auction for Pic#2')
+  const openAuctionResponse2 = await node2.localOpenAuction('Pic#2', 60)
+  const auctionId2 = openAuctionResponse2.auctionId
+  log(`Auction opened for Pic#2: ${auctionId2}`)
 
-    // Client#3 makes bid for Client#1->Pic#1 with 75.5 USDt
-    log('Client#3 placing bid for Pic#1')
-    await clientToNode3.request('placeBid', Buffer.from(JSON.stringify({
-      messageId: messageId(),
-      auctionId: auctionId1,
-      bidAmount: 75.5,
-      bidder: 'node3'
-    })))
-    log('Bid placed by Client#3 for Pic#1')
+  // Wait for auctions to propagate
+  await new Promise(resolve => setTimeout(resolve, 2000))
 
-    // Client#2 makes bid for Client#1->Pic#1 with 80 USDt
-    log('Client#2 placing second bid for Pic#1')
-    await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
-      messageId: messageId(),
-      auctionId: auctionId1,
-      bidAmount: 80,
-      bidder: 'node2'
-    })))
-    log('Second bid placed by Client#2 for Pic#1')
+  // Client#2 makes bid for Client#1->Pic#1 with 75 USDt
+  log('Client#2 placing bid for Pic#1')
+  await node2.localPlaceBid(auctionId1, 75, 'node2')
+  log('Bid placed by Client#2 for Pic#1')
 
-    // Client#1 closes auction
-    log('Client#1 closing auction for Pic#1')
-    const closeAuctionResponse = await clientToNode1.request('closeAuction', Buffer.from(JSON.stringify({
-      messageId: messageId(),
-      auctionId: auctionId1,
-      closedBy: 'node1'
-    })))
-    log(`Auction closed: ${closeAuctionResponse.toString()}`)
+  // Client#3 makes bid for Client#1->Pic#1 with 75.5 USDt
+  log('Client#3 placing bid for Pic#1')
+  await node3.localPlaceBid(auctionId1, 75.5, 'node3')
+  log('Bid placed by Client#3 for Pic#1')
 
-    // Get the final auction status
-    log('Getting final auction status from all nodes')
-    const finalStatusResponse1 = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
-    log(`Final auction status from node1: ${finalStatusResponse1.toString()}`)
+  // Client#2 makes bid for Client#1->Pic#1 with 80 USDt
+  log('Client#2 placing second bid for Pic#1')
+  await node2.localPlaceBid(auctionId1, 80, 'node2')
+  log('Second bid placed by Client#2 for Pic#1')
 
-    const finalStatusResponse2 = await clientToNode2.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
-    log(`Final auction status from node2: ${finalStatusResponse2.toString()}`)
+  // Wait for bids to propagate
+  await new Promise(resolve => setTimeout(resolve, 2000))
 
-    const finalStatusResponse3 = await clientToNode3.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
-    log(`Final auction status from node3: ${finalStatusResponse3.toString()}`)
-  } else {
-    log('Nodes failed to discover each other')
-  }
+  // Client#1 closes auction
+  log('Client#1 closing auction for Pic#1')
+  const closeAuctionResponse = await node1.localCloseAuction(auctionId1)
+  log(`Auction closed: ${JSON.stringify(closeAuctionResponse)}`)
+
+  // Wait for auction close to propagate
+  await new Promise(resolve => setTimeout(resolve, 2000))
+
+  // Get the final auction status
+  log('Getting final auction status from all nodes')
+  const finalStatusResponse1 = await node1.getAuctionStatus(auctionId1)
+  log(`Final auction status from node1: ${JSON.stringify(finalStatusResponse1)}`)
+
+  const finalStatusResponse2 = await node2.getAuctionStatus(auctionId1)
+  log(`Final auction status from node2: ${JSON.stringify(finalStatusResponse2)}`)
+
+  const finalStatusResponse3 = await node3.getAuctionStatus(auctionId1)
+  log(`Final auction status from node3: ${JSON.stringify(finalStatusResponse3)}`)
 
   log('All tests completed')
 
   // Close nodes
-  await node1.swarm.destroy()
-  await node2.swarm.destroy()
-  await node3.swarm.destroy()
+  await Promise.all([
+    node1.swarm.destroy(),
+    node2.swarm.destroy(),
+    node3.swarm.destroy()
+  ])
   log('Nodes closed')
 }
 
-main().then(() => process.exit(0)).catch(console.error)
+main().then(() => process.exit(0)).catch(error => {
+  console.error('An error occurred:', error)
+  process.exit(1)
+})

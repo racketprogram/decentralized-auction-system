@@ -1,5 +1,4 @@
 const RPC = require('@hyperswarm/rpc')
-const Hypercore = require('hypercore')
 const Hyperswarm = require('hyperswarm')
 const crypto = require('crypto')
 
@@ -15,12 +14,8 @@ class AuctionNode {
     log(`Initializing AuctionNode with ID: ${nodeId}, Secure Mode: ${secureMode}`)
     this.rpc = new RPC()
     this.server = this.rpc.createServer()
-    this.auctions = new Hypercore(`./data/auctions-${nodeId}`, {
-      valueEncoding: 'json'
-    })
-    this.bids = new Hypercore(`./data/bids-${nodeId}`, {
-      valueEncoding: 'json'
-    })
+    this.auctions = []
+    this.bids = []
 
     this.swarm = new Hyperswarm()
     this.peers = new Map()
@@ -168,7 +163,7 @@ class AuctionNode {
     const auctionId = crypto.randomBytes(32).toString('hex')
     log(`Node ${this.nodeId} opening new auction: ${auctionId} for item: ${item} with starting price: ${startingPrice}`)
     const auction = { id: auctionId, item, startingPrice, status: 'open', createdBy: this.nodeId }
-    await this.auctions.append(auction)
+    await this.auctions.push(auction)
     log(`Auction ${auctionId} opened successfully`)
     return { auctionId, item, startingPrice }
   }
@@ -176,7 +171,7 @@ class AuctionNode {
   async syncOpenAuction(auctionId, item, startingPrice, createdBy) {
     log(`Node ${this.nodeId} syncing new auction: ${auctionId} for item: ${item}`)
     const auction = { id: auctionId, item, startingPrice, status: 'open', createdBy }
-    await this.auctions.append(auction)
+    await this.auctions.push(auction)
     log(`Auction ${auctionId} synced successfully`)
   }
 
@@ -193,7 +188,7 @@ class AuctionNode {
     }
 
     const bid = { auctionId, bidder, amount: bidAmount, timestamp: Date.now() }
-    await this.bids.append(bid)
+    await this.bids.push(bid)
     log(`Bid placed successfully for auction ${auctionId}`)
     return { success: true }
   }
@@ -201,7 +196,7 @@ class AuctionNode {
   async syncPlaceBid(auctionId, bidAmount, bidder) {
     log(`Node ${this.nodeId} syncing bid of ${bidAmount} for auction: ${auctionId} by bidder: ${bidder}`)
     const bid = { auctionId, bidder, amount: bidAmount, timestamp: Date.now() }
-    await this.bids.append(bid)
+    await this.bids.push(bid)
     log(`Bid synced successfully for auction ${auctionId}`)
   }
 
@@ -219,7 +214,7 @@ class AuctionNode {
 
     const winningBid = await this.getHighestBid(auctionId)
     const closedAuction = { ...auctionStatus, status: 'closed', winner: winningBid }
-    await this.auctions.append(closedAuction)
+    await this.auctions.push(closedAuction)
     log(`Auction ${auctionId} closed successfully`)
     return { success: true, winningBid }
   }
@@ -233,14 +228,14 @@ class AuctionNode {
     }
     const winningBid = await this.getHighestBid(auctionId)
     const closedAuction = { ...auctionStatus, status: 'closed', winner: winningBid }
-    await this.auctions.append(closedAuction)
+    await this.auctions.push(closedAuction)
     log(`Auction ${auctionId} sync closed successfully`)
   }
 
   async getAuctionStatus(auctionId) {
     log(`Getting status for auction: ${auctionId}`)
     for (let i = this.auctions.length - 1; i >= 0; i--) {
-      const auction = await this.auctions.get(i)
+      const auction = await this.auctions[i]
       if (auction.id === auctionId) {
         const highestBid = await this.getHighestBid(auctionId)
         const status = { ...auction, highestBid: highestBid ? highestBid.amount : auction.startingPrice, noAnyBid: !highestBid }
@@ -256,7 +251,7 @@ class AuctionNode {
     log(`Getting highest bid for auction: ${auctionId}`)
     let highestBid = null
     for (let i = 0; i < this.bids.length; i++) {
-      const bid = await this.bids.get(i)
+      const bid = await this.bids[i]
       if (bid.auctionId === auctionId && (!highestBid || bid.amount > highestBid.amount)) {
         highestBid = bid
       }
@@ -296,8 +291,7 @@ async function waitForPeerDiscovery(node, targetPublicKey, maxWaitTime = 120000)
     }
     await new Promise(resolve => setTimeout(resolve, 1000))
   }
-  log(`Node ${node.nodeId} failed to discover peer ${targetPublicKey} within ${maxWaitTime}ms`)
-  return false
+  throw `Node ${node.nodeId} failed to discover peer ${targetPublicKey} within ${maxWaitTime}ms`
 }
 
 function messageId() {
@@ -423,4 +417,7 @@ async function main() {
   log('Nodes closed')
 }
 
-main().then(() => process.exit(0)).catch(console.error)
+main().then(() => process.exit(0)).catch(err => {
+  log(err)
+  process.exit(1)
+})

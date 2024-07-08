@@ -193,7 +193,7 @@ class AuctionNode {
       log(`Bid failed: Auction ${auctionId} is not open`)
       throw new Error('Auction is not open')
     }
-    if (bidAmount <= auctionStatus.highestBid) {
+    if (!auctionStatus.noAnyBid && bidAmount <= auctionStatus.highestBid) {
       log(`Bid failed: Bid amount ${bidAmount} is not higher than current highest bid ${auctionStatus.highestBid}`)
       throw new Error('Bid amount must be higher than current highest bid')
     }
@@ -249,7 +249,7 @@ class AuctionNode {
       const auction = await this.auctions.get(i)
       if (auction.id === auctionId) {
         const highestBid = await this.getHighestBid(auctionId)
-        const status = { ...auction, highestBid: highestBid ? highestBid.amount : auction.startingPrice }
+        const status = { ...auction, highestBid: highestBid ? highestBid.amount : auction.startingPrice, noAnyBid: !highestBid }
         log(`Status for auction ${auctionId}: ${JSON.stringify(status)}`)
         return status
       }

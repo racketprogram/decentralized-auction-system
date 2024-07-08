@@ -317,79 +317,112 @@ async function main() {
   const node2 = new AuctionNode('node2', sharedSecret, secureMode)
   const clientToNode2 = await node2.start()
 
-  log('Waiting for nodes to discover each other')
-  const node2DiscoveredNode1 = await waitForPeerDiscovery(node2, node1.server.publicKey.toString('hex'))
-  const node1DiscoveredNode2 = await waitForPeerDiscovery(node1, node2.server.publicKey.toString('hex'))
+  const node3 = new AuctionNode('node3', sharedSecret, secureMode)
+  const clientToNode3 = await node3.start()
 
-  if (node2DiscoveredNode1 && node1DiscoveredNode2) {
-    log('Both nodes have discovered each other')
+  log('Waiting for nodes to discover each other')
+  const allNodesDiscovered = await Promise.all([
+    waitForPeerDiscovery(node1, node2.server.publicKey.toString('hex')),
+    waitForPeerDiscovery(node1, node3.server.publicKey.toString('hex')),
+    waitForPeerDiscovery(node2, node1.server.publicKey.toString('hex')),
+    waitForPeerDiscovery(node2, node3.server.publicKey.toString('hex')),
+    waitForPeerDiscovery(node3, node1.server.publicKey.toString('hex')),
+    waitForPeerDiscovery(node3, node2.server.publicKey.toString('hex'))
+  ])
+
+  if (allNodesDiscovered.every(discovered => discovered)) {
+    log('All nodes have discovered each other')
 
     // 給節點一些時間來發現彼此並同步數據
     await new Promise(resolve => setTimeout(resolve, 5000))
 
     try {
-      log('Opening auction by node1')
-      const messageId = crypto.randomBytes(32).toString('hex')
-      const openAuctionResponse = await clientToNode1.request('openAuction', Buffer.from(JSON.stringify({
-        messageId,
+      // Client#1 opens auction: sell Pic#1 for 75 USDt
+      log('Client#1 opening auction for Pic#1')
+      const messageId1 = crypto.randomBytes(32).toString('hex')
+      const openAuctionResponse1 = await clientToNode1.request('openAuction', Buffer.from(JSON.stringify({
+        messageId: messageId1,
         item: 'Pic#1',
         startingPrice: 75,
-        createdBy: 'node1'  // 添加 createdBy 參數
+        createdBy: 'node1'
       })))
-      const { auctionId } = JSON.parse(openAuctionResponse.toString())
-      log(`Auction opened: ${auctionId}`)
+      const { auctionId: auctionId1 } = JSON.parse(openAuctionResponse1.toString())
+      log(`Auction opened for Pic#1: ${auctionId1}`)
+
+      // Client#2 opens auction: sell Pic#2 for 60 USDt
+      log('Client#2 opening auction for Pic#2')
+      const messageId2 = crypto.randomBytes(32).toString('hex')
+      const openAuctionResponse2 = await clientToNode2.request('openAuction', Buffer.from(JSON.stringify({
+        messageId: messageId2,
+        item: 'Pic#2',
+        startingPrice: 60,
+        createdBy: 'node2'
+      })))
+      const { auctionId: auctionId2 } = JSON.parse(openAuctionResponse2.toString())
+      log(`Auction opened for Pic#2: ${auctionId2}`)
 
       // 等待一段時間，確保數據同步
       await new Promise(resolve => setTimeout(resolve, 5000))
 
-      log('Getting auction status by node1')
-      let statusResponse = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
-      log(`Auction status from node1: ${statusResponse.toString()}`)
-
-      log('Getting auction status by node2')
-      statusResponse = await clientToNode2.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
-      log(`Auction status from node2: ${statusResponse.toString()}`)
-
-      log('Placing bid by node2')
-      const bidMessageId = crypto.randomBytes(32).toString('hex')
+      // Client#2 makes bid for Client#1->Pic#1 with 75 USDt
+      log('Client#2 placing bid for Pic#1')
+      const bidMessageId1 = crypto.randomBytes(32).toString('hex')
       await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
-        messageId: bidMessageId,
-        auctionId,
+        messageId: bidMessageId1,
+        auctionId: auctionId1,
+        bidAmount: 75,
+        bidder: 'node2'
+      })))
+      log('Bid placed by Client#2 for Pic#1')
+
+      // Client#3 makes bid for Client#1->Pic#1 with 75.5 USDt
+      log('Client#3 placing bid for Pic#1')
+      const bidMessageId2 = crypto.randomBytes(32).toString('hex')
+      await clientToNode3.request('placeBid', Buffer.from(JSON.stringify({
+        messageId: bidMessageId2,
+        auctionId: auctionId1,
+        bidAmount: 75.5,
+        bidder: 'node3'
+      })))
+      log('Bid placed by Client#3 for Pic#1')
+
+      // Client#2 makes bid for Client#1->Pic#1 with 80 USDt
+      log('Client#2 placing second bid for Pic#1')
+      const bidMessageId3 = crypto.randomBytes(32).toString('hex')
+      await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
+        messageId: bidMessageId3,
+        auctionId: auctionId1,
         bidAmount: 80,
         bidder: 'node2'
       })))
-      log('Bid placed')
+      log('Second bid placed by Client#2 for Pic#1')
 
       // 等待一段時間，確保數據同步
       await new Promise(resolve => setTimeout(resolve, 5000))
 
-      log('Getting updated auction status from node1')
-      const newStatusResponse1 = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
-      log(`New auction status from node1: ${newStatusResponse1.toString()}`)
-
-      log('Getting updated auction status from node2')
-      const newStatusResponse2 = await clientToNode2.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
-      log(`New auction status from node2: ${newStatusResponse2.toString()}`)
-
-      log('Closing auction')
+      // Client#1 closes auction
+      log('Client#1 closing auction for Pic#1')
       const closeMessageId = crypto.randomBytes(32).toString('hex')
       const closeAuctionResponse = await clientToNode1.request('closeAuction', Buffer.from(JSON.stringify({
         messageId: closeMessageId,
-        auctionId,
-        closedBy: 'node1'  // 添加 closedBy 參數
+        auctionId: auctionId1,
+        closedBy: 'node1'
       })))
       log(`Auction closed: ${closeAuctionResponse.toString()}`)
 
       // 等待一段時間，確保數據同步
       await new Promise(resolve => setTimeout(resolve, 5000))
 
-      log('Getting final auction status from node1')
-      const finalStatusResponse1 = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
+      // 獲取最終拍賣狀態
+      log('Getting final auction status from all nodes')
+      const finalStatusResponse1 = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
       log(`Final auction status from node1: ${finalStatusResponse1.toString()}`)
 
-      log('Getting final auction status from node2')
-      const finalStatusResponse2 = await clientToNode2.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId })))
+      const finalStatusResponse2 = await clientToNode2.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
       log(`Final auction status from node2: ${finalStatusResponse2.toString()}`)
+
+      const finalStatusResponse3 = await clientToNode3.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
+      log(`Final auction status from node3: ${finalStatusResponse3.toString()}`)
 
     } catch (error) {
       console.error('Error during auction process:', error.message)
@@ -404,6 +437,7 @@ async function main() {
   // 關閉節點
   await node1.swarm.destroy()
   await node2.swarm.destroy()
+  await node3.swarm.destroy()
   log('Nodes closed')
 }
 

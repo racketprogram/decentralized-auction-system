@@ -43,7 +43,10 @@ class AuctionNode {
       .digest()
 
     log(`Joining swarm with topic: ${topic.toString('hex')}`)
-    this.swarm.join(topic, { lookup: true, announce: true })
+    this.swarm.join(topic, {
+      server: true,
+      client: true,
+   })
 
     this.swarm.on('connection', this.handleConnection.bind(this))
 

@@ -72,6 +72,38 @@ This system utilizes a simple data propagation method rather than distributed st
 
 The system supports a secure mode where peers must authenticate using a shared secret. This helps prevent unauthorized access to the auction network.
 
+## Test Description
+
+The `main` function in this project runs a series of automated tests that simulate a complete auction process. Here's a detailed explanation of the test flow:
+
+1. **Node Initialization and Discovery**
+   - Create and start three auction nodes (node1, node2, node3)
+   - Wait for all nodes to discover each other
+
+2. **Auction Creation**
+   - Client#1 (node1) creates an auction: Pic#1, starting price 75 USDt
+   - Client#2 (node2) creates another auction: Pic#2, starting price 60 USDt
+   - Verify the uniqueness of the two auction IDs
+
+3. **Bidding Process**
+   - Client#2 bids 75 USDt for Pic#1
+   - Client#3 bids 75.5 USDt for Pic#1
+   - Client#2 places a second bid of 80 USDt for Pic#1
+
+4. **Auction Closure**
+   - Client#1 closes the auction for Pic#1
+
+5. **Final Status Verification**
+   - Retrieve the final auction status from all three nodes
+   - Assert that the auction status is consistent across all nodes
+   - Verify that the auction status is 'closed'
+   - Confirm that the winner is node2 with a winning bid of 80 USDt
+
+6. **Cleanup**
+   - Close all node connections
+
+These tests ensure that the auction system functions correctly in a distributed environment, maintaining consistency across all nodes throughout the auction process.
+
 ## Limitations and Future Improvements
 
 - Implement distributed storage using Hypercore or Hyperbee:

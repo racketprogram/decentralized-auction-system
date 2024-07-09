@@ -2,9 +2,9 @@
     "name": "p2p-auction",
     "version": "1.0.0",
     "description": "P2P Auction System using Hyperswarm RPC and Hypercores",
-    "main": "src/index.js",
+    "main": "p2p.js",
     "scripts": {
-        "start": "node src/index.js"
+        "start": "node p2p.js"
     },
     "dependencies": {
         "@hyperswarm/rpc": "^3.3.2",

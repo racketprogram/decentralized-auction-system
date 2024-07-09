@@ -1,6 +1,7 @@
 const RPC = require('@hyperswarm/rpc')
 const Hyperswarm = require('hyperswarm')
 const crypto = require('crypto')
+const assert = require('assert')
 
 function log(message) {
   console.log(`[${new Date().toISOString()}] ${message}`)
@@ -115,7 +116,7 @@ class AuctionNode {
 
   async handlePlaceBid(reqData) {
     log(`Node ${this.nodeId} received placeBid request`)
-    const { messageId, auctionId, bidAmount, bidder } = JSON.parse(reqData.toString())
+    const { messageId, auctionId, bidAmount, bidder, timestamp } = JSON.parse(reqData.toString())
 
     if (this.processedMessages.has(messageId)) {
       log(`Ignoring already processed message: ${messageId}`)
@@ -126,10 +127,10 @@ class AuctionNode {
 
     if (bidder === this.nodeId) {
       const result = await this.localPlaceBid(auctionId, bidAmount, bidder)
-      await this.broadcastToAllNodes('placeBid', { messageId, auctionId, bidAmount, bidder })
+      await this.broadcastToAllNodes('placeBid', { messageId, auctionId, bidAmount, bidder, timestamp: result.timestamp })
       return Buffer.from(JSON.stringify(result))
     } else {
-      await this.syncPlaceBid(auctionId, bidAmount, bidder)
+      await this.syncPlaceBid(auctionId, bidAmount, bidder, timestamp)
       return Buffer.from(JSON.stringify({ status: 'synced' }))
     }
   }
@@ -193,12 +194,12 @@ class AuctionNode {
     const bid = { auctionId, bidder, amount: bidAmount, timestamp: Date.now() }
     await this.bids.push(bid)
     log(`Bid placed successfully for auction ${auctionId}`)
-    return { success: true }
+    return { success: true, timestamp: bid.timestamp }
   }
 
-  async syncPlaceBid(auctionId, bidAmount, bidder) {
+  async syncPlaceBid(auctionId, bidAmount, bidder, timestamp) {
     log(`Node ${this.nodeId} syncing bid of ${bidAmount} for auction: ${auctionId} by bidder: ${bidder}`)
-    const bid = { auctionId, bidder, amount: bidAmount, timestamp: Date.now() }
+    const bid = { auctionId, bidder, amount: bidAmount, timestamp: timestamp}
     await this.bids.push(bid)
     log(`Bid synced successfully for auction ${auctionId}`)
   }
@@ -325,9 +326,7 @@ async function main() {
     waitForPeerDiscovery(node3, node2.server.publicKey.toString('hex'))
   ])
 
-  if (!allNodesDiscovered.every(discovered => discovered)) {
-    throw 'Nodes failed to discover each other'
-  }
+  assert(allNodesDiscovered.every(discovered => discovered), 'All nodes should discover each other')
 
   log('All nodes have discovered each other')
 
@@ -341,6 +340,8 @@ async function main() {
   })))
   const { auctionId: auctionId1 } = JSON.parse(openAuctionResponse1.toString())
   log(`Auction opened for Pic#1: ${auctionId1}`)
+  
+  assert(auctionId1, 'Auction ID should be returned for Pic#1')
 
   // Client#2 opens auction: sell Pic#2 for 60 USDt
   log('Client#2 opening auction for Pic#2')
@@ -352,44 +353,45 @@ async function main() {
   })))
   const { auctionId: auctionId2 } = JSON.parse(openAuctionResponse2.toString())
   log(`Auction opened for Pic#2: ${auctionId2}`)
+  
+  assert(auctionId2, 'Auction ID should be returned for Pic#2')
+  assert(auctionId1 !== auctionId2, 'Auction IDs should be unique')
 
   // Client#2 makes bid for Client#1->Pic#1 with 75 USDt
   log('Client#2 placing bid for Pic#1')
-  await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
+  const bidResponse1 = await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
     messageId: messageId(),
     auctionId: auctionId1,
     bidAmount: 75,
     bidder: 'node2'
   })))
   log('Bid placed by Client#2 for Pic#1')
+  
+  assert.strictEqual(JSON.parse(bidResponse1.toString()).success, true, 'Bid should be successful')
 
   // Client#3 makes bid for Client#1->Pic#1 with 75.5 USDt
   log('Client#3 placing bid for Pic#1')
-  await clientToNode3.request('placeBid', Buffer.from(JSON.stringify({
+  const bidResponse2 = await clientToNode3.request('placeBid', Buffer.from(JSON.stringify({
     messageId: messageId(),
     auctionId: auctionId1,
     bidAmount: 75.5,
     bidder: 'node3'
   })))
   log('Bid placed by Client#3 for Pic#1')
+  
+  assert.strictEqual(JSON.parse(bidResponse2.toString()).success, true, 'Bid should be successful')
 
   // Client#2 makes bid for Client#1->Pic#1 with 80 USDt
   log('Client#2 placing second bid for Pic#1')
-  await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
+  const bidResponse3 = await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
     messageId: messageId(),
     auctionId: auctionId1,
     bidAmount: 80,
     bidder: 'node2'
   })))
   log('Second bid placed by Client2 for Pic#1')
-
-  // await clientToNode3.request('placeBid', Buffer.from(JSON.stringify({
-  //   messageId: messageId(),
-  //   auctionId: auctionId1,
-  //   bidAmount: 123,
-  //   bidder: 'node3'
-  // })))
-  // log('Second bid placed by Client#3 for Pic#1')
+  
+  assert.strictEqual(JSON.parse(bidResponse3.toString()).success, true, 'Bid should be successful')
 
   // Client#1 closes auction
   log('Client#1 closing auction for Pic#1')
@@ -399,6 +401,8 @@ async function main() {
     closedBy: 'node1'
   })))
   log(`Auction closed: ${closeAuctionResponse.toString()}`)
+  
+  assert.strictEqual(JSON.parse(closeAuctionResponse.toString()).success, true, 'Auction should close successfully')
 
   // Get the final auction status
   log('Getting final auction status from all nodes')
@@ -411,7 +415,18 @@ async function main() {
   const finalStatusResponse3 = await clientToNode3.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
   log(`Final auction status from node3: ${finalStatusResponse3.toString()}`)
 
-  log('All tests success')
+  const status1 = JSON.parse(finalStatusResponse1.toString())
+  const status2 = JSON.parse(finalStatusResponse2.toString())
+  const status3 = JSON.parse(finalStatusResponse3.toString())
+
+  assert.deepStrictEqual(status1, status2, 'Auction status should be consistent between node1 and node2')
+  assert.deepStrictEqual(status2, status3, 'Auction status should be consistent between node2 and node3')
+  assert.deepStrictEqual(status1, status3, 'Auction status should be consistent between node1 and node3')
+  assert.strictEqual(status1.status, 'closed', 'Auction status should be closed')
+  assert.strictEqual(status1.winner.bidder, 'node2', 'Winner should be node2')
+  assert.strictEqual(status1.winner.amount, 80, 'Winning bid should be 80')
+
+  log('All tests passed successfully')
 
   // close nodes
   await node1.swarm.destroy()

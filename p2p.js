@@ -46,7 +46,7 @@ class AuctionNode {
     this.swarm.join(topic, {
       server: true,
       client: true,
-   })
+    })
 
     this.swarm.on('connection', this.handleConnection.bind(this))
 
@@ -292,7 +292,7 @@ async function waitForPeerDiscovery(node, targetPublicKey, maxWaitTime = 120000)
       log(`Node ${node.nodeId} found peer ${targetPublicKey}`)
       return true
     }
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    await new Promise(resolve => setTimeout(resolve, 5000))
   }
   throw `Node ${node.nodeId} failed to discover peer ${targetPublicKey} within ${maxWaitTime}ms`
 }
@@ -325,91 +325,91 @@ async function main() {
     waitForPeerDiscovery(node3, node2.server.publicKey.toString('hex'))
   ])
 
-  if (allNodesDiscovered.every(discovered => discovered)) {
-    log('All nodes have discovered each other')
-
-    // Client#1 opens auction: sell Pic#1 for 75 USDt
-    log('Client#1 opening auction for Pic#1')
-    const openAuctionResponse1 = await clientToNode1.request('openAuction', Buffer.from(JSON.stringify({
-      messageId: messageId(),
-      item: 'Pic#1',
-      startingPrice: 75,
-      createdBy: 'node1'
-    })))
-    const { auctionId: auctionId1 } = JSON.parse(openAuctionResponse1.toString())
-    log(`Auction opened for Pic#1: ${auctionId1}`)
-
-    // Client#2 opens auction: sell Pic#2 for 60 USDt
-    log('Client#2 opening auction for Pic#2')
-    const openAuctionResponse2 = await clientToNode2.request('openAuction', Buffer.from(JSON.stringify({
-      messageId: messageId(),
-      item: 'Pic#2',
-      startingPrice: 60,
-      createdBy: 'node2'
-    })))
-    const { auctionId: auctionId2 } = JSON.parse(openAuctionResponse2.toString())
-    log(`Auction opened for Pic#2: ${auctionId2}`)
-
-    // Client#2 makes bid for Client#1->Pic#1 with 75 USDt
-    log('Client#2 placing bid for Pic#1')
-    await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
-      messageId: messageId(),
-      auctionId: auctionId1,
-      bidAmount: 75,
-      bidder: 'node2'
-    })))
-    log('Bid placed by Client#2 for Pic#1')
-
-    // Client#3 makes bid for Client#1->Pic#1 with 75.5 USDt
-    log('Client#3 placing bid for Pic#1')
-    await clientToNode3.request('placeBid', Buffer.from(JSON.stringify({
-      messageId: messageId(),
-      auctionId: auctionId1,
-      bidAmount: 75.5,
-      bidder: 'node3'
-    })))
-    log('Bid placed by Client#3 for Pic#1')
-
-    // Client#2 makes bid for Client#1->Pic#1 with 80 USDt
-    log('Client#2 placing second bid for Pic#1')
-    await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
-      messageId: messageId(),
-      auctionId: auctionId1,
-      bidAmount: 80,
-      bidder: 'node2'
-    })))
-    log('Second bid placed by Client2 for Pic#1')
-
-    // await clientToNode3.request('placeBid', Buffer.from(JSON.stringify({
-    //   messageId: messageId(),
-    //   auctionId: auctionId1,
-    //   bidAmount: 123,
-    //   bidder: 'node3'
-    // })))
-    // log('Second bid placed by Client#3 for Pic#1')
-
-    // Client#1 closes auction
-    log('Client#1 closing auction for Pic#1')
-    const closeAuctionResponse = await clientToNode1.request('closeAuction', Buffer.from(JSON.stringify({
-      messageId: messageId(),
-      auctionId: auctionId1,
-      closedBy: 'node1'
-    })))
-    log(`Auction closed: ${closeAuctionResponse.toString()}`)
-
-    // Get the final auction status
-    log('Getting final auction status from all nodes')
-    const finalStatusResponse1 = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
-    log(`Final auction status from node1: ${finalStatusResponse1.toString()}`)
-
-    const finalStatusResponse2 = await clientToNode2.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
-    log(`Final auction status from node2: ${finalStatusResponse2.toString()}`)
-
-    const finalStatusResponse3 = await clientToNode3.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
-    log(`Final auction status from node3: ${finalStatusResponse3.toString()}`)
-  } else {
-    log('Nodes failed to discover each other')
+  if (!allNodesDiscovered.every(discovered => discovered)) {
+    throw 'Nodes failed to discover each other'
   }
+
+  log('All nodes have discovered each other')
+
+  // Client#1 opens auction: sell Pic#1 for 75 USDt
+  log('Client#1 opening auction for Pic#1')
+  const openAuctionResponse1 = await clientToNode1.request('openAuction', Buffer.from(JSON.stringify({
+    messageId: messageId(),
+    item: 'Pic#1',
+    startingPrice: 75,
+    createdBy: 'node1'
+  })))
+  const { auctionId: auctionId1 } = JSON.parse(openAuctionResponse1.toString())
+  log(`Auction opened for Pic#1: ${auctionId1}`)
+
+  // Client#2 opens auction: sell Pic#2 for 60 USDt
+  log('Client#2 opening auction for Pic#2')
+  const openAuctionResponse2 = await clientToNode2.request('openAuction', Buffer.from(JSON.stringify({
+    messageId: messageId(),
+    item: 'Pic#2',
+    startingPrice: 60,
+    createdBy: 'node2'
+  })))
+  const { auctionId: auctionId2 } = JSON.parse(openAuctionResponse2.toString())
+  log(`Auction opened for Pic#2: ${auctionId2}`)
+
+  // Client#2 makes bid for Client#1->Pic#1 with 75 USDt
+  log('Client#2 placing bid for Pic#1')
+  await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
+    messageId: messageId(),
+    auctionId: auctionId1,
+    bidAmount: 75,
+    bidder: 'node2'
+  })))
+  log('Bid placed by Client#2 for Pic#1')
+
+  // Client#3 makes bid for Client#1->Pic#1 with 75.5 USDt
+  log('Client#3 placing bid for Pic#1')
+  await clientToNode3.request('placeBid', Buffer.from(JSON.stringify({
+    messageId: messageId(),
+    auctionId: auctionId1,
+    bidAmount: 75.5,
+    bidder: 'node3'
+  })))
+  log('Bid placed by Client#3 for Pic#1')
+
+  // Client#2 makes bid for Client#1->Pic#1 with 80 USDt
+  log('Client#2 placing second bid for Pic#1')
+  await clientToNode2.request('placeBid', Buffer.from(JSON.stringify({
+    messageId: messageId(),
+    auctionId: auctionId1,
+    bidAmount: 80,
+    bidder: 'node2'
+  })))
+  log('Second bid placed by Client2 for Pic#1')
+
+  // await clientToNode3.request('placeBid', Buffer.from(JSON.stringify({
+  //   messageId: messageId(),
+  //   auctionId: auctionId1,
+  //   bidAmount: 123,
+  //   bidder: 'node3'
+  // })))
+  // log('Second bid placed by Client#3 for Pic#1')
+
+  // Client#1 closes auction
+  log('Client#1 closing auction for Pic#1')
+  const closeAuctionResponse = await clientToNode1.request('closeAuction', Buffer.from(JSON.stringify({
+    messageId: messageId(),
+    auctionId: auctionId1,
+    closedBy: 'node1'
+  })))
+  log(`Auction closed: ${closeAuctionResponse.toString()}`)
+
+  // Get the final auction status
+  log('Getting final auction status from all nodes')
+  const finalStatusResponse1 = await clientToNode1.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
+  log(`Final auction status from node1: ${finalStatusResponse1.toString()}`)
+
+  const finalStatusResponse2 = await clientToNode2.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
+  log(`Final auction status from node2: ${finalStatusResponse2.toString()}`)
+
+  const finalStatusResponse3 = await clientToNode3.request('getAuctionStatus', Buffer.from(JSON.stringify({ auctionId: auctionId1 })))
+  log(`Final auction status from node3: ${finalStatusResponse3.toString()}`)
 
   log('All tests success')
 

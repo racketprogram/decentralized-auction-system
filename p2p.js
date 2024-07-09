@@ -24,11 +24,13 @@ class AuctionNode {
       createIfMissing: true,
       overwrite: false,
       writable: true,
+      readonly: false,
     })
     this.db = new Hyperbee(core, {
       keyEncoding: 'utf-8',
       valueEncoding: 'json',
       writable: true,
+      readonly: false,
     })
 
     this.swarm = new Hyperswarm()
@@ -273,10 +275,12 @@ async function main() {
   const node2 = new AuctionNode('node2', sharedSecret, sharedKey, secureMode)
   const node3 = new AuctionNode('node3', sharedSecret, sharedKey, secureMode)
 
-  const [client1, client2, client3] = await Promise.all([node1.start(), node2.start(), node3.start()])
+  const client1 = await node1.start()
+  const client2 = await node2.start()
+  const client3 = await node3.start()
 
   log('Checking Hyperbee writability for all nodes')
-  await checkPeerjoined()
+  // await checkPeerjoined()
 
   // const writableResults = await Promise.all([
   //   checkHyperbeeWritable(node1),
@@ -297,6 +301,8 @@ async function main() {
   })))
   const auctionId1 = JSON.parse(openAuctionResponse1.toString()).auctionId
   log(`Auction opened for Pic#1: ${auctionId1}`)
+
+  process.exit(1)
 
   // Client#2 opens auction: sell Pic#2 for 60 USDt
   log('Client#2 opening auction for Pic#2')

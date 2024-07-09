@@ -1,7 +1,6 @@
 const RPC = require('@hyperswarm/rpc')
 const Hypercore = require('hypercore')
 const Hyperswarm = require('hyperswarm')
-const Hyperbee = require('hyperbee')
 const crypto = require('crypto')
 
 function log(message) {
@@ -19,19 +18,16 @@ class AuctionNode {
     this.rpc = new RPC()
     this.server = this.rpc.createServer()
 
-    const core = new Hypercore(`./data/auction-${nodeId}`, sharedKey, {
-      valueEncoding: 'json',
-      createIfMissing: true,
-      overwrite: false,
-      writable: true,
-      readonly: false,
-    })
-    this.db = new Hyperbee(core, {
-      keyEncoding: 'utf-8',
-      valueEncoding: 'json',
-      writable: true,
-      readonly: false,
-    })
+    const core = new Hypercore(`./data/auction-${nodeId}`,
+      // sharedKey, 
+      {
+        // valueEncoding: 'utf-8',
+        // createIfMissing: true,
+        // overwrite: false,
+        // writable: true,
+        // readonly: false,
+      })
+    this.core = core
 
     this.swarm = new Hyperswarm()
     this.processedMessages = new Set()
@@ -50,12 +46,12 @@ class AuctionNode {
 
   async start() {
     await this.server.listen()
-    await this.db.ready()
+    await this.core.ready()
 
     const publicKey = this.server.publicKey.toString('hex')
     log(`Node ${this.nodeId} started with public key: ${publicKey}`)
 
-    const topic = crypto.createHash('sha256').update(this.db.core.key).digest()
+    const topic = crypto.createHash('sha256').update('auction-p2p123').digest()
 
     this.swarm.join(topic, { server: true, client: true })
     this.swarm.on('connection', this.handleConnection.bind(this))
@@ -71,8 +67,9 @@ class AuctionNode {
       try {
         const authenticated = await this.authenticatePeer(socket, info)
         if (authenticated) {
-          const stream = this.db.replicate(true, { live: true })
-          stream.pipe(socket).pipe(stream)
+          this.core.replicate(socket)
+          // const stream = this.core.replicate(false, { live: true })
+          // stream.pipe(socket).pipe(stream)
           peerJoined++
           log(`Peer ${remotePublicKey} successfully joined the application`)
         } else {
@@ -112,6 +109,38 @@ class AuctionNode {
     const response = crypto.createHash('sha256').update(challenge + this.sharedSecret).digest('hex')
     return Buffer.from(response)
   }
+
+  async waitW() {
+    if (!this.core.writable) {
+      log('Finding peers')
+      const done = this.core.findingPeers()
+      this.swarm.flush().then(done, done)
+      await this.core.update()
+    }
+  }
+
+  async waitForSync(index, peerCount) {
+    return new Promise((resolve) => {
+      const checkSync = async () => {
+        while (true) {
+          log(`wait sync peer for index ${index}`)
+          const peers = this.core.peers.filter(peer => {
+            log(peer.remoteLength)
+            return peer.remoteLength >= index
+          })
+
+          if (peers.length >= peerCount) {
+            resolve()
+            break
+          }
+          // 使用 await 來創建一個非阻塞的延遲
+          await new Promise(r => setTimeout(r, 1000))
+        }
+      }
+      checkSync()
+    })
+  }
+
 
   async handleOpenAuction(reqData) {
     log(`Node ${this.nodeId} received openAuction request`)
@@ -178,17 +207,23 @@ class AuctionNode {
   }
 
   async localOpenAuction(item, startingPrice) {
-    await this.db.ready()
+    await this.core.ready()
+    await this.core.update({ wait: true })
+    await this.waitW()
     const auctionId = crypto.randomBytes(32).toString('hex')
     log(`Node ${this.nodeId} opening new auction: ${auctionId} for item: ${item} with starting price: ${startingPrice}`)
     const auction = { id: auctionId, item, startingPrice, status: 'open', createdBy: this.nodeId, bids: [] }
-    await this.db.put(`auction:${auctionId}`, auction)
+    const event = { type: 'openAuction', auction }
+    const { length, byteLength } = await this.core.append(Buffer.from(JSON.stringify(event)), { wait: true })
     log(`Auction ${auctionId} opened successfully`)
+    // await this.waitForSync(length, 2)
     return { auctionId, item, startingPrice }
   }
 
   async localPlaceBid(auctionId, bidAmount, bidder) {
-    await this.db.ready()
+    await this.core.ready()
+    await this.core.update({ wait: true })
+    await this.waitW()
     log(`Node ${this.nodeId} placing bid of ${bidAmount} for auction: ${auctionId} by bidder: ${bidder}`)
     const auctionStatus = await this.getAuctionStatus(auctionId)
     if (!auctionStatus || auctionStatus.status !== 'open') {
@@ -201,14 +236,17 @@ class AuctionNode {
     }
 
     const bid = { bidder, amount: bidAmount, timestamp: Date.now() }
-    auctionStatus.bids.push(bid)
-    await this.db.put(`auction:${auctionId}`, auctionStatus)
+    const event = { type: 'placeBid', auctionId, bid }
+    const { length, byteLength } = await this.core.append(JSON.stringify(event), { wait: true })
     log(`Bid placed successfully for auction ${auctionId}`)
+    // await this.waitForSync(length, 2)
     return { success: true }
   }
 
   async localCloseAuction(auctionId) {
-    await this.db.ready()
+    await this.core.ready()
+    await this.core.update({ wait: true })
+    await this.waitW()
     log(`Node ${this.nodeId} attempting to close auction: ${auctionId}`)
     const auctionStatus = await this.getAuctionStatus(auctionId)
     if (!auctionStatus || auctionStatus.status !== 'open') {
@@ -220,46 +258,63 @@ class AuctionNode {
       throw new Error('Only the creator can close the auction')
     }
 
-    auctionStatus.status = 'closed'
-    await this.db.put(`auction:${auctionId}`, auctionStatus)
+    const event = { type: 'closeAuction', auctionId }
+    const { length, byteLength } = await this.core.append(JSON.stringify(event), { wait: true })
     log(`Auction ${auctionId} closed successfully`)
+    // await this.waitForSync(length, 2)
     return { success: true, winner: auctionStatus.bids[auctionStatus.bids.length - 1] }
   }
 
   async getAuctionStatus(auctionId) {
+    await this.core.ready()
+    await this.core.update({ wait: true })
     log(`Getting status for auction: ${auctionId}`)
-    const auction = await this.db.get(`auction:${auctionId}`)
+    let auction = null
+    let bids = []
+
+    for await (const data of this.core.createReadStream()) {
+      const event = JSON.parse(data.toString()) // 將 Buffer 轉換回 JSON
+      log(event)
+      if (event.type === 'openAuction' && event.auction.id === auctionId) {
+        auction = event.auction
+      } else if (event.type === 'placeBid' && event.auctionId === auctionId) {
+        bids.push(event.bid)
+      } else if (event.type === 'closeAuction' && event.auctionId === auctionId) {
+        auction.status = 'closed'
+      }
+    }
+
     if (auction) {
-      const status = auction.value
-      log(`Status for auction ${auctionId}: ${JSON.stringify(status)}`)
-      return status
+      auction.bids = bids
+      log(`Status for auction ${auctionId}: ${JSON.stringify(auction)}`)
+      return auction
     }
     log(`Auction ${auctionId} not found`)
     return null
   }
 }
 
-async function checkHyperbeeWritable(node, maxAttempts = 100, delay = 3000) {
+async function checkHypercoreWritable(node, maxAttempts = 100, delay = 3000) {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    if (node.db.core.writable) {
-      log(`Hyperbee for node ${node.nodeId} is writable.`)
+    if (node.core.writable) {
+      log(`Hypercore for node ${node.nodeId} is writable.`)
       return true
     }
-    log(`Attempt ${attempt + 1}: Hyperbee for node ${node.nodeId} is not writable yet. Waiting...`)
+    log(`Attempt ${attempt + 1}: Hypercore for node ${node.nodeId} is not writable yet. Waiting...`)
     await new Promise(resolve => setTimeout(resolve, delay))
   }
-  log(`Failed to confirm Hyperbee writability for node ${node.nodeId} after ${maxAttempts} attempts.`)
+  log(`Failed to confirm Hypercore writability for node ${node.nodeId} after ${maxAttempts} attempts.`)
   return false
 }
 
 async function checkPeerjoined(delay = 3000) {
   let attempt = 0
-  while(true) {
+  while (true) {
     if (peerJoined >= 6) {
-      log(`Hyperbee is writable.`)
+      log(`All peer joined.`)
       return true
     }
-    log(`Attempt ${attempt + 1}: Hyperbee is not writable yet. Waiting...`)
+    log(`Attempt ${attempt++}: peer is not all joined. Waiting...`)
     await new Promise(resolve => setTimeout(resolve, delay))
   }
 }
@@ -279,17 +334,17 @@ async function main() {
   const client2 = await node2.start()
   const client3 = await node3.start()
 
-  log('Checking Hyperbee writability for all nodes')
-  // await checkPeerjoined()
+  log('Checking Hypercore writability for all nodes')
+  await checkPeerjoined()
 
-  // const writableResults = await Promise.all([
-  //   checkHyperbeeWritable(node1),
-  //   checkHyperbeeWritable(node2),
-  //   checkHyperbeeWritable(node3)
-  // ])
-  // if (!writableResults.every(result => result)) {
-  //   throw new Error('Not all Hyperbees are writable. Aborting.')
-  // }
+  const writableResults = await Promise.all([
+    checkHypercoreWritable(node1),
+    checkHypercoreWritable(node2),
+    checkHypercoreWritable(node3)
+  ])
+  if (!writableResults.every(result => result)) {
+    throw new Error('Not all Hypercore are writable. Aborting.')
+  }
 
   // Client#1 opens auction: sell Pic#1 for 75 USDt
   log('Client#1 opening auction for Pic#1')
@@ -301,8 +356,6 @@ async function main() {
   })))
   const auctionId1 = JSON.parse(openAuctionResponse1.toString()).auctionId
   log(`Auction opened for Pic#1: ${auctionId1}`)
-
-  process.exit(1)
 
   // Client#2 opens auction: sell Pic#2 for 60 USDt
   log('Client#2 opening auction for Pic#2')
@@ -316,7 +369,7 @@ async function main() {
   log(`Auction opened for Pic#2: ${auctionId2}`)
 
   // Wait for auctions to propagate
-  await new Promise(resolve => setTimeout(resolve, 2000))
+  await new Promise(resolve => setTimeout(resolve, 10 * 1000))
 
   // Client#2 makes bid for Client#1->Pic#1 with 75 USDt
   log('Client#2 placing bid for Pic#1')
